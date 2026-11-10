@@ -1,4 +1,3 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAudioPlayer } from "expo-audio";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
@@ -20,6 +19,13 @@ import {
 
 import MapPreviewNative from "../MapPreview.native";
 import MapPreviewWeb from "../MapPreview.web";
+import {
+  createTodo,
+  getTodos,
+  removeTodo,
+  updateTodo,
+  type TodoLocation,
+} from "../services/todos";
 
 const MapPreview = Platform.OS === "web" ? MapPreviewWeb : MapPreviewNative;
 
@@ -32,11 +38,7 @@ Notifications.setNotificationHandler({
   }),
 });
 
-type LocationData = {
-  address: string;
-  latitude: number;
-  longitude: number;
-};
+type LocationData = TodoLocation;
 
 type Task = {
   id: string;
@@ -59,12 +61,12 @@ type Place = {
   };
 };
 
-const STORAGE_KEY = "tasks";
-
 export default function Index() {
   const [task, setTask] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [apiError, setApiError] = useState("");
 
   const [location, setLocation] = useState("");
   const [coordinates, setCoordinates] = useState<LocationData | null>(null);
@@ -83,17 +85,17 @@ export default function Index() {
 
   const player = useAudioPlayer(require("../../assets/sounds/mysound.m4a"));
 
-  // Load saved tasks
+  // Load saved tasks from MongoDB through the backend API.
   useEffect(() => {
     const loadTasks = async () => {
       try {
-        const saved = await AsyncStorage.getItem(STORAGE_KEY);
+        const savedTasks = await getTodos();
 
-        if (saved) {
-          setTasks(JSON.parse(saved));
-        }
+        setTasks(savedTasks);
+        setApiError("");
       } catch (error) {
         console.error("Loading tasks failed:", error);
+        setApiError("Could not load tasks from the backend.");
       } finally {
         setIsLoaded(true);
       }
@@ -101,15 +103,6 @@ export default function Index() {
 
     loadTasks();
   }, []);
-
-  // Save tasks
-  useEffect(() => {
-    if (!isLoaded) return;
-
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)).catch((error) =>
-      console.error("Saving tasks failed:", error),
-    );
-  }, [tasks, isLoaded]);
 
   // Set up notifications
   useEffect(() => {
@@ -220,20 +213,27 @@ export default function Index() {
       return;
     }
 
-    const newTask: Task = {
-      id: Date.now().toString(),
-      title,
-      completed: false,
-      location: coordinates,
-    };
+    setIsSaving(true);
 
-    setTasks((previous) => [...previous, newTask]);
+    try {
+      const newTask = await createTodo(title, coordinates);
 
-    setTask("");
-    setLocation("");
-    setCoordinates(null);
-    setSuggestions([]);
-    setLocationError("");
+      setTasks((previous) => [newTask, ...previous]);
+      setTask("");
+      setLocation("");
+      setCoordinates(null);
+      setSuggestions([]);
+      setLocationError("");
+      setApiError("");
+    } catch (error) {
+      console.error("Creating task failed:", error);
+      setApiError("Could not save the task to the backend.");
+      Alert.alert("Save failed", "Could not save the task to the backend.");
+      setIsSaving(false);
+      return;
+    }
+
+    setIsSaving(false);
 
     // Play your custom sound inside the app
     try {
@@ -261,16 +261,50 @@ export default function Index() {
     }
   };
 
-  const toggleTask = (id: string) => {
+  const toggleTask = async (id: string) => {
+    const selectedTask = tasks.find((item) => item.id === id);
+
+    if (!selectedTask) return;
+
+    const completed = !selectedTask.completed;
+
     setTasks((previous) =>
       previous.map((item) =>
-        item.id === id ? { ...item, completed: !item.completed } : item,
+        item.id === id ? { ...item, completed } : item,
       ),
     );
+
+    try {
+      const savedTask = await updateTodo(id, { completed });
+
+      setTasks((previous) =>
+        previous.map((item) => (item.id === id ? savedTask : item)),
+      );
+      setApiError("");
+    } catch (error) {
+      console.error("Updating task failed:", error);
+      setApiError("Could not update the task in the backend.");
+      setTasks((previous) =>
+        previous.map((item) =>
+          item.id === id ? { ...item, completed: selectedTask.completed } : item,
+        ),
+      );
+    }
   };
 
-  const deleteTask = (id: string) => {
+  const deleteTask = async (id: string) => {
+    const previousTasks = tasks;
+
     setTasks((previous) => previous.filter((item) => item.id !== id));
+
+    try {
+      await removeTodo(id);
+      setApiError("");
+    } catch (error) {
+      console.error("Deleting task failed:", error);
+      setApiError("Could not delete the task from the backend.");
+      setTasks(previousTasks);
+    }
   };
 
   // Get current device GPS location
@@ -375,6 +409,7 @@ const getCurrentLocation = async () => {
     >
       <Text style={styles.heading}>My To-Do List</Text>
       <Text style={styles.subtitle}>Stay organized and productive!</Text>
+      {!!apiError && <Text style={styles.errorText}>{apiError}</Text>}
 
       {/* Device location side navigation */}
       <View style={styles.locationNav}>
@@ -535,7 +570,9 @@ const getCurrentLocation = async () => {
       )}
       {/* Add task */}
       <Pressable style={styles.addButton} onPress={addTask}>
-        <Text style={styles.buttonText}>Add Task</Text>
+        <Text style={styles.buttonText}>
+          {isSaving ? "Saving..." : "Add Task"}
+        </Text>
       </Pressable>
 
       <Text style={styles.taskCount}>Total tasks: {tasks.length}</Text>

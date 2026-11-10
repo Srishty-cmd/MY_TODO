@@ -17,6 +17,19 @@ const todoSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    location: {
+      address: {
+        type: String,
+        default: "",
+      },
+      latitude: {
+        type: Number,
+      },
+      longitude: {
+        type: Number,
+      },
+    },
   },
   {
     timestamps: true,
